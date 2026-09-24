@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+
+# Maintainer notes kept outside the public project.
+/docs/publishing.md
