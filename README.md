@@ -30,8 +30,8 @@ A normal installation starts with **one configured workspace**. The bounded
 [two-root upgrade](docs/two-root-upgrade.md) can reserve one additional, disjoint
 root while preserving the original configuration and recovery journal exactly.
 The second root has an independent journal and must be explicitly activated after
-separate provisioning; reservation creates no workspace or locks. A command selects
-folders in one registered root at a time. Selected paths and their ancestors must
+separate provisioning; reservation creates no workspace or locks. Mutating commands select
+folders in one registered root at a time; explicit `status --all` inspects all roots. Selected paths and their ancestors must
 be real directories, rather than symlinks. Nested mounts and special files are refused.
 Read [behavior and recovery](docs/behavior.md) for the details of these boundaries.
 
@@ -111,13 +111,26 @@ sudo locker unlock "$locker_workspace/project-a" "$locker_workspace/project-b"
 ## Inspect locks
 
 ```bash
-locker status                    # Name editable exceptions in the workspace
+locker status                    # Inspect the original default root; scope notice in multi-root mode
+locker status --all              # Inspect all ACTIVE roots; report PENDING explicitly
+locker status --all --json       # Global report for scripts/agents
 locker status --editable         # Editable locations; --unlocked is an alias
 locker status --locked           # Locked locations
 locker status --tree             # Expand mixed folders in a compact tree
 locker status --tree --limit 0   # Show all detail rows
 locker status "$locker_workspace/project-a" --json
 ```
+
+Without paths or `--root`, status keeps the original default root and existing
+stdout text/JSON. When an additional registration exists, a **stderr** notice names
+it and explains that it was not inspected. Use `--all` for global coverage, or an
+explicit path for a quiet, bounded report. `roots` lists registrations, not locks.
+
+`status --all` labels each registration/default root. Its JSON is the usual array
+with `registration` and `default` added to each row. PENDING roots are not scanned:
+they appear as UNVERIFIED and make the command exit 1. Invalid registration metadata
+also fails closed. See [status contracts and examples](docs/status.md), including
+exit codes and compatibility for scripts that merge stdout and stderr.
 
 Uniform subfolders collapse into one row covering their contents. A mixed folder
 can have a different flag from its children; filtered lists label such an entry
@@ -143,7 +156,7 @@ recovery journal.
 | `locker doctor` | Inspect the default scope, inode-flag interface and current capability. |
 | `locker roots [--json]` | List exact registrations; ACTIVE/PENDING is distinct from immutable-lock status. |
 | `sudo locker activate-root PATH` | Bind the one reserved, separately provisioned empty root; does not create or lock it. |
-| `locker status [PATH ...]` | Inspect the selected directories, or the configured workspace. |
+| `locker status [PATH ...] [--all]` | Inspect explicit paths, the default root, or all registrations; paths and `--all` are exclusive. |
 | `locker lock PATH ... --dry-run` | Preflight the selection without changing flags. |
 | `sudo locker lock PATH ...` | Record, apply and verify recursive locks. |
 | `sudo locker unlock PATH ... --dry-run` | Count selected locks in the private recovery journal. |
@@ -154,8 +167,9 @@ recovery journal.
 Before installation, previews require `./locker.py --root PATH ...`. Once
 configured, `--root` selects only an exact registered root; it cannot redirect
 or add a scope. Without `--root`, explicit selected paths choose their registered
-root automatically; no paths retains the original default. Mixed-root commands
-and unregistered/common-parent paths are refused.
+root automatically; no paths retains the original default. Mixed-root path selections
+and unregistered/common-parent paths are refused. Only read-only `status --all`
+combines root observations.
 The self-test always requires an explicit, writable parent on the filesystem
 you want to test. It cannot create its scratch directory inside a locked parent.
 
@@ -174,6 +188,11 @@ For the reviewed 1.3.0 installation, [reserving a second root](docs/two-root-upg
 uses a separate explicit `--upgrade --reserve-root NEW_ROOT EXISTING_ROOT` path with
 backup, before/after protection validation and rollback. Do not use a normal
 installer to downgrade an active two-root installation.
+An already active two-root installation uses the ordinary upgrade command with
+the original default root; it preserves both registrations/journals and performs
+no activation or flag changes. A fresh single-root 1.4.0 installation does not yet
+have a later add-root command; the reservation path is intentionally limited to
+the reviewed 1.3.0 migration. Do not downgrade or hand-edit controls to bypass it.
 Workspace validation happens before replacing the installed command. If your
 source checkout is locked, extract the new version into a writable location.
 
@@ -206,7 +225,8 @@ sh -n install.sh
 Unit tests use disposable directories and simulated flag operations. The
 separate privileged self-test verifies kernel enforcement. GitHub Actions is
 configured to run unit tests on Python 3.10 through 3.14 and the kernel self-test
-on Ubuntu. See [contributing](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
+on Ubuntu. See [contributing](CONTRIBUTING.md), the [changelog](CHANGELOG.md),
+[1.4.0 release notes](docs/releases/1.4.0.md) and the [publication procedure](docs/releasing.md).
 
 ## License
 

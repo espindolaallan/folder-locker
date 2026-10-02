@@ -45,6 +45,14 @@ being changed. Use `/usr/local/bin/locker` when managing a folder that contains
 the source checkout. Avoid moving the workspace or ancestors of managed folders
 while any locks remain.
 
+## Status across roots
+
+Default status retains the original root and stdout contract, with a stderr scope
+notice when another registration exists. Explicit `status --all` inspects ACTIVE
+roots separately; PENDING is listed as UNVERIFIED without traversal (exit 1).
+`roots` lists registration/identity, not actual immutable protection. Read the
+[status contract](status.md) before parsing output, especially combined streams.
+
 ## Symlinks
 
 Links remain in place, including directory links, broken links and cycles. Their

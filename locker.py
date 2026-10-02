@@ -679,10 +679,8 @@ def print_status_locations(result: dict, view: str, limit: int) -> None:
         print("  Everything else in this selection is locked.")
 
 
-def show_status(scope: Scope, roots: list[Path], *, as_json: bool = False,
-                view: str = "default", limit: int = 50) -> int:
+def collect_status(scope: Scope, roots: list[Path], view: str) -> list[dict]:
     results = []
-    failed = False
     for root in roots:
         try:
             inspected = scan(scope, [root], Flags(), require_containment=False)
@@ -698,12 +696,18 @@ def show_status(scope: Scope, roots: list[Path], *, as_json: bool = False,
                             "hardlinked_files": len(inspected.hardlink_counts),
                             "hardlinks_outside_selection": inspected.incomplete_hardlinks()})
         except (LockerError, OSError) as error:
-            failed = True
             results.append({"path": str(root), "state": "UNVERIFIED", "error": str(error)})
+    return results
+
+
+def print_status(results: list[dict], *, as_json: bool, view: str, limit: int) -> int:
     if as_json:
         print(json.dumps(results, indent=2, ensure_ascii=True))
     else:
         for result in results:
+            if "registration" in result:
+                print(f"Root: {display(result['path'])} [{result['registration']}]" +
+                      (" (default)" if result["default"] else ""))
             if "error" in result:
                 print(f"UNVERIFIED {display(result['path'])}: {result['error']}")
             else:
@@ -716,7 +720,47 @@ def show_status(scope: Scope, roots: list[Path], *, as_json: bool = False,
                 if result["hardlinks_outside_selection"]:
                     print(f"  {result['hardlinks_outside_selection']} shared files have hard links outside this "
                           "selection. Lock/unlock must include every linked location.")
-    return 1 if failed else 0
+    return int(any(result["state"] == "UNVERIFIED" for result in results))
+
+
+def show_status(scope: Scope, roots: list[Path], *, as_json: bool = False,
+                view: str = "default", limit: int = 50) -> int:
+    return print_status(collect_status(scope, roots, view), as_json=as_json, view=view, limit=limit)
+
+
+def default_status_notice(scope: Scope) -> None:
+    # Preserve the legacy stdout/exit contract. Inspect only registration metadata,
+    # never the additional tree; even a broken registration cannot disable primary status.
+    if not (SECONDARY_CONFIG.exists() or SECONDARY_CONFIG.is_symlink()):
+        return
+    try:
+        data = additional_registration(scope)
+        registration = "PENDING" if data["identity"] is None else "ACTIVE"
+        extra = f"Additional root {display(data['root'])} is {registration}; not inspected."
+    except (LockerError, OSError, ValueError, KeyError, TypeError, RecursionError):
+        extra = "Additional registration is UNVERIFIED; global status is unknown."
+    print("Scope: default root only. " + extra +
+          " Use 'locker status --all' or 'locker roots'.", file=sys.stderr)
+
+
+def show_all_status(*, as_json: bool, view: str, limit: int) -> int:
+    # Registry validation happens before any output. PENDING is reported explicitly
+    # without opening that root; no unregistered path or common parent is scanned.
+    registrations = registered_roots()
+    results = []
+    for registration in registrations:
+        root = registration["root"]
+        try:
+            if registration["registration"] == "PENDING":
+                raise LockerError("Root is PENDING; not inspected and no filesystem authority granted.")
+            scope = load_scope(root)
+            roots = scope.select([root], protect_tool=False)
+            result, = collect_status(scope, roots, view)
+        except (LockerError, OSError, ValueError, KeyError, TypeError, RecursionError) as error:
+            result = {"path": root, "state": "UNVERIFIED", "error": str(error)}
+        results.append({**result, "registration": registration["registration"],
+                        "default": registration["default"]})
+    return print_status(results, as_json=as_json, view=view, limit=limit)
 
 
 def self_test(parent: Path) -> None:
@@ -830,9 +874,10 @@ def main(argv: list[str] | None = None) -> int:
         command = commands.add_parser(action, help=f"Recursively {action} one or more directories")
         command.add_argument("paths", nargs="+")
         command.add_argument("--dry-run", action="store_true", help="Inspect without changing attributes")
-    command = commands.add_parser("status", help="Verify actual immutable flags recursively")
+    command = commands.add_parser("status", help="Inspect selected paths, the default root, or --all registered roots")
     command.add_argument("paths", nargs="*")
     command.add_argument("--json", action="store_true")
+    command.add_argument("--all", action="store_true", help="Inspect every ACTIVE root and report PENDING reservations")
     views = command.add_mutually_exclusive_group()
     views.add_argument("--editable", "--unlocked", dest="view", action="store_const", const="editable",
                        help="List editable folders/files, collapsing fully editable subfolders")
@@ -848,6 +893,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "status" and args.limit < 0:
         parser.error("--limit must be zero or positive")
+    if args.command == "status" and args.all and (args.paths or args.root is not None):
+        parser.error("status --all cannot be combined with paths or --root")
     if args.command == "init" and not args.root:
         parser.error("--root PATH is required for init")
     try:
@@ -868,6 +915,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "activate-root":
             activate_root(absolute(args.path))
             return 0
+        if args.command == "status" and args.all:
+            return show_all_status(as_json=args.json, view=args.view, limit=args.limit)
         write = args.command in ("lock", "unlock") and not args.dry_run
         if write:
             require_admin(immutable=True)
@@ -883,6 +932,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         roots = scope.select(args.paths or [str(scope.root)], protect_tool=write)
         if args.command == "status":
+            if not args.paths and args.root is None:
+                default_status_notice(scope)
             return show_status(scope, roots, as_json=args.json, view=args.view, limit=args.limit)
         if args.command == "lock" and args.dry_run:
             inspected = scan(scope, roots, Flags())

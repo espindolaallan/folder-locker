@@ -50,3 +50,9 @@ Unit tests cover the declared Python versions; a separate Ubuntu job runs the
 kernel self-test. Successful unit tests alone do not establish filesystem support.
 
 Contributions are made under the project's [MIT license](LICENSE).
+
+## Releases
+
+Review the exact commit and public artifacts before publishing. Follow
+[the release procedure](docs/releasing.md); tests do not authorize pushing,
+creating remote tags or publishing a GitHub Release.

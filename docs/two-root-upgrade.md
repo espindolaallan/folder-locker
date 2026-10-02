@@ -4,6 +4,9 @@ This upgrade reserves one additional, disjoint root while preserving the origina
 configuration, inode identity, recovery history and protection. It is specifically
 for the reviewed 1.3.0 executable; another installed build is refused. Normal
 single-root installations and the original default selection remain supported.
+A fresh single-root 1.4.0 installation does not yet have a later add-root path;
+this installer accepts only the exact reviewed 1.3.0 predecessor. Do not downgrade
+or change administrative controls to work around that limit.
 
 ## Boundary and states
 
@@ -20,8 +23,10 @@ The common parent is not a managed scope. No third-root command exists.
   performs no flag writes; use `status` to inspect actual protection.
 
 An explicit path chooses its own registered root. `--root` can select only an exact
-registration. With no selection, commands retain the original default. Mixed-root
-commands are refused; operations on either root use a separate journal under the
+registration. With no selection, commands retain the original default. Implicit status prints a
+stderr scope notice; explicit `status --all` reports every registration, scanning
+only ACTIVE roots. See [status contracts](status.md) for JSON/exit behavior. Mixed-root
+path selections and all mixed-root mutations are refused; operations on either root use a separate journal under the
 same process lock. Invalid or pending additional registration does not disable the
 original root. Hard links spanning roots cannot be mutated through a partial
 selection. Symlink, nested-mount, replacement and recovery checks remain in force.
@@ -130,3 +135,11 @@ alias and an empty directory on its parent's filesystem. It records the new inod
 it does not create the directory, change permissions or lock it. Inspect `roots`,
 `--root PATH doctor` and `status PATH`, then establish protection explicitly before
 using it for library migrations. That later step is not part of this installation.
+
+## Updating an already active two-root installation
+
+Use the ordinary `sudo ./install.sh --upgrade /absolute/original-root` command.
+It validates the original identity and replaces only the executable; it does not
+rewrite either registration or journal and does not change flags. Do not repeat
+`--reserve-root`, `activate-root`, or the absent-root validation/rollback checkpoint.
+Afterward, inspect `locker roots --json` and `locker status --all --json`.
