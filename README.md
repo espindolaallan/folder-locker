@@ -26,9 +26,13 @@ remain readable and can be copied to a writable destination.
   self-test. The process needs `CAP_LINUX_IMMUTABLE`; containers and sandboxes can
   withhold it even from root.
 
-One installation manages **one configured workspace**, with any number of
-selected folders inside it. Selected paths and their ancestors must be real
-directories, rather than symlinks. Nested mounts and special files are refused.
+A normal installation starts with **one configured workspace**. The bounded
+[two-root upgrade](docs/two-root-upgrade.md) can reserve one additional, disjoint
+root while preserving the original configuration and recovery journal exactly.
+The second root has an independent journal and must be explicitly activated after
+separate provisioning; reservation creates no workspace or locks. A command selects
+folders in one registered root at a time. Selected paths and their ancestors must
+be real directories, rather than symlinks. Nested mounts and special files are refused.
 Read [behavior and recovery](docs/behavior.md) for the details of these boundaries.
 
 ## Install
@@ -136,7 +140,9 @@ recovery journal.
 
 | Command | Purpose |
 | --- | --- |
-| `locker doctor` | Inspect the scope, inode-flag interface and current capability. |
+| `locker doctor` | Inspect the default scope, inode-flag interface and current capability. |
+| `locker roots [--json]` | List exact registrations; ACTIVE/PENDING is distinct from immutable-lock status. |
+| `sudo locker activate-root PATH` | Bind the one reserved, separately provisioned empty root; does not create or lock it. |
 | `locker status [PATH ...]` | Inspect the selected directories, or the configured workspace. |
 | `locker lock PATH ... --dry-run` | Preflight the selection without changing flags. |
 | `sudo locker lock PATH ...` | Record, apply and verify recursive locks. |
@@ -146,7 +152,10 @@ recovery journal.
 | `locker --version` | Print the installed version. |
 
 Before installation, previews require `./locker.py --root PATH ...`. Once
-configured, `--root` cannot redirect the installation to a different workspace.
+configured, `--root` selects only an exact registered root; it cannot redirect
+or add a scope. Without `--root`, explicit selected paths choose their registered
+root automatically; no paths retains the original default. Mixed-root commands
+and unregistered/common-parent paths are refused.
 The self-test always requires an explicit, writable parent on the filesystem
 you want to test. It cannot create its scratch directory inside a locked parent.
 
@@ -160,7 +169,11 @@ locker --version
 locker status
 ```
 
-Upgrades preserve the workspace configuration, recovery journal and locks.
+Ordinary upgrades preserve the workspace configuration, recovery journal and locks.
+For the reviewed 1.3.0 installation, [reserving a second root](docs/two-root-upgrade.md)
+uses a separate explicit `--upgrade --reserve-root NEW_ROOT EXISTING_ROOT` path with
+backup, before/after protection validation and rollback. Do not use a normal
+installer to downgrade an active two-root installation.
 Workspace validation happens before replacing the installed command. If your
 source checkout is locked, extract the new version into a writable location.
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0 (unreleased)
+
+- Add one explicitly reserved additional root, without rewriting primary config
+  or journal; separate root identities and recovery records, one root per command.
+- Keep an absent root PENDING until separate owner provisioning and activation.
+- Reject third/common-parent scopes, mixed selections, root/parent replacement,
+  mounted activation aliases and wrong-root journal records.
+- Add a bounded 1.3.0 upgrade with exact-state backups, protection comparison,
+  automatic failure rollback and an explicit pre-provisioning rollback command.
+- Unit tests cover routing, independent histories, failures and recovery without
+  administrator access or real immutable flag writes. Kernel self-test remains
+  a separate administrator validation.
+
 ## 1.3.0 (unreleased)
 
 - Document workspace configuration with examples that apply to any installation.

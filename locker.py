@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Folder Locker: explicit, recursive Linux immutable locks within one workspace."""
+"""Folder Locker: explicit, recursive Linux immutable locks within registered roots."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import errno
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,9 +27,10 @@ import struct
 import tempfile
 
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 CONFIG = Path("/etc/folder-locker/config.json")
 STATE_DIR = Path("/var/lib/folder-locker")
+SECONDARY_CONFIG = Path("/etc/folder-locker/additional-root.json")
 IMMUTABLE = 0x10
 CAP_LINUX_IMMUTABLE = 9
 GETFLAGS = (2 << 30) | (struct.calcsize("l") << 16) | (ord("f") << 8) | 1
@@ -394,15 +396,79 @@ class Locker:
         return len({(node.device, node.inode) for node in selected})
 
 
-def load_scope(override: str | None, *, write: bool = False) -> Scope:
-    if CONFIG.exists():
-        check_trusted(CONFIG)
-        data = json.loads(CONFIG.read_text())
-        if data.get("version") != 1:
-            raise LockerError("Unsupported configuration version.")
+def primary_scope() -> Scope:
+    check_trusted(CONFIG)
+    data = json.loads(CONFIG.read_text())
+    if data.get("version") != 1:
+        raise LockerError("Unsupported configuration version.")
+    root = Path(data["root"])
+    node = Node(**data["identity"])
+    if not root.is_absolute() or root != absolute(root) or node.path != str(root) or not node.directory:
+        raise LockerError("Invalid primary root identity; refusing to reinterpret configuration.")
+    return Scope(root, node)
+
+
+def root_reservation(primary: Scope, root: Path) -> dict:
+    """Prepare one explicit pending root. Never create it or adopt an existing tree."""
+    if not root.is_absolute() or root != absolute(root) or len(root.parts) < 3:
+        raise LockerError("An absolute dedicated root is required.")
+    if inside(root, primary.root) or inside(primary.root, root):
+        raise LockerError("The two roots must be disjoint; a shared parent is not a scope.")
+    for protected in (CONFIG, STATE_DIR, Path(sys.executable), Path(__file__).resolve()):
+        if inside(protected, root):
+            raise LockerError("The additional root would contain installed control files.")
+    with open_node(primary.identity):
+        pass
+    parent = Scope.create(root.parent)
+    if os.path.lexists(root):
+        raise LockerError("Reservation requires an absent root; no existing tree is adopted.")
+    return {"version": 1, "root": str(root), "identity": None,
+            "parent_identity": asdict(parent.identity),
+            "primary_sha256": hashlib.sha256(CONFIG.read_bytes()).hexdigest()}
+
+
+def additional_registration(primary: Scope) -> dict:
+    check_trusted(SECONDARY_CONFIG)
+    data = json.loads(SECONDARY_CONFIG.read_text())
+    expected = {"version", "root", "identity", "parent_identity", "primary_sha256"}
+    if set(data) != expected or data["version"] != 1:
+        raise LockerError("Unsupported additional-root registration.")
+    root = Path(data["root"])
+    if (not root.is_absolute() or root != absolute(root) or
+            inside(root, primary.root) or inside(primary.root, root)):
+        raise LockerError("Invalid or overlapping additional root.")
+    if data["primary_sha256"] != hashlib.sha256(CONFIG.read_bytes()).hexdigest():
+        raise LockerError("Primary configuration changed; additional root requires review.")
+    parent = Node(**data["parent_identity"])
+    if parent.path != str(root.parent) or not parent.directory:
+        raise LockerError("Invalid additional-root parent identity.")
+    if data["identity"] is not None:
+        node = Node(**data["identity"])
+        if node.path != str(root) or not node.directory:
+            raise LockerError("Invalid additional-root identity.")
+    return data
+
+
+def load_scope(override: str | None, *, write: bool = False,
+               paths: list[str] | None = None) -> Scope:
+    if CONFIG.exists() or CONFIG.is_symlink():
+        primary = primary_scope()
+        selected = [absolute(p) for p in paths or []]
+        if ((override is None and all(inside(p, primary.root) for p in selected)) or
+                (override is not None and absolute(override) == primary.root)):
+            return primary
+        if not (SECONDARY_CONFIG.exists() or SECONDARY_CONFIG.is_symlink()):
+            raise LockerError("--root cannot override the installed scope; path is outside the configured root.")
+        data = additional_registration(primary)
         root = Path(data["root"])
-        if override and absolute(override) != root:
-            raise LockerError("--root cannot override the installed scope.")
+        if override is not None and absolute(override) != root:
+            raise LockerError("--root can select only a registered root; a third root is forbidden.")
+        if any(not inside(p, root) for p in selected):
+            raise LockerError("Select directories in one configured root per command.")
+        if data["identity"] is None:
+            raise LockerError(f"Root is PENDING, not activated: {display(root)}. No filesystem authority granted.")
+        with open_node(Node(**data["parent_identity"])):
+            pass
         return Scope(root, Node(**data["identity"]))
     if write:
         raise LockerError("Install and initialize the tool first; see README.md.")
@@ -413,7 +479,7 @@ def load_scope(override: str | None, *, write: bool = False) -> Scope:
 
 
 @contextmanager
-def operation_journal():
+def operation_lock():
     require_admin()
     check_trusted(STATE_DIR)
     fd = os.open(STATE_DIR / "operation.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -422,12 +488,77 @@ def operation_journal():
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise LockerError("Another locker operation is running.") from error
-        state_path = STATE_DIR / "state.json"
-        if state_path.exists() or state_path.is_symlink():
-            check_trusted(state_path)
-        yield Journal(state_path)
+        yield
     finally:
         os.close(fd)
+
+
+@contextmanager
+def operation_journal(scope: Scope | None = None):
+    with operation_lock():
+        directory = STATE_DIR
+        if scope is not None:
+            if load_scope(str(scope.root), write=True) != scope:
+                raise LockerError("Registered scope changed before operation.")
+            if scope.root != primary_scope().root:
+                directory = STATE_DIR / "additional"
+                check_trusted(directory)
+        state_path = directory / "state.json"
+        if state_path.exists() or state_path.is_symlink():
+            check_trusted(state_path)
+        journal = Journal(state_path)
+        if scope is not None and any(not inside(Path(p), scope.root) for p in journal.records):
+            raise LockerError("Journal contains records outside its own root; refusing mutation.")
+        yield journal
+
+
+def activate_root(root: Path) -> None:
+    require_admin()
+    with operation_lock():
+        primary = primary_scope()
+        data = additional_registration(primary)
+        if str(root) != data["root"]:
+            raise LockerError("Only the reserved additional root can be activated.")
+        with open_node(Node(**data["parent_identity"])):
+            pass
+        if data["identity"] is not None:
+            with open_node(Node(**data["identity"])):
+                pass
+            print("Additional root already activated; no change.")
+            return
+        if root in mounted_paths():
+            raise LockerError("Additional-root activation refuses a mounted/aliased root.")
+        with open_path(root, directory=True) as fd:
+            if os.fstat(fd).st_dev != data["parent_identity"]["device"]:
+                raise LockerError("Additional root must share its pinned parent's filesystem.")
+            if os.listdir(fd):
+                raise LockerError("Initial activation requires an empty, owner-provisioned root.")
+            Flags().read(fd)  # Verify flag interface, never SETFLAGS.
+            node = Node.from_stat(root, os.fstat(fd))
+        # The dedicated journal directory is installed in advance, never inferred from user paths.
+        check_trusted(STATE_DIR / "additional")
+        if any((STATE_DIR / "additional").iterdir()):
+            raise LockerError("Pending root has unexpected state; review before activation.")
+        data["identity"] = asdict(node)
+        atomic_json(SECONDARY_CONFIG, data, 0o644)
+        print(f"Activated {display(root)}. No immutable flags or permissions changed; inspect status.")
+
+
+def registered_roots() -> list[dict]:
+    primary = primary_scope()
+    with open_node(primary.identity):
+        pass
+    rows = [{"root": str(primary.root), "registration": "ACTIVE", "default": True}]
+    if SECONDARY_CONFIG.exists() or SECONDARY_CONFIG.is_symlink():
+        data = additional_registration(primary)
+        with open_node(Node(**data["parent_identity"])):
+            pass
+        if data["identity"] is not None:
+            with open_node(Node(**data["identity"])):
+                pass
+        rows.append({"root": data["root"], "registration": "PENDING" if data["identity"] is None else "ACTIVE",
+                     "default": False})
+    return rows
 
 
 def initialize(root: Path) -> None:
@@ -687,9 +818,13 @@ def self_test(parent: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"Folder Locker {VERSION}")
-    parser.add_argument("--root", help="Workspace for previews/initialization; cannot override installed scope")
+    parser.add_argument("--root", help="Preview workspace or exact registered root; never overrides installed scopes")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="Initialize the root-owned configuration (installer uses this)")
+    command = commands.add_parser("roots", help="List registered roots; PENDING grants no filesystem authority")
+    command.add_argument("--json", action="store_true")
+    command = commands.add_parser("activate-root", help="Bind the reserved root after separate owner provisioning")
+    command.add_argument("path")
     commands.add_parser("doctor", help="Check scope, filesystem flag support and process privileges")
     for action in ("lock", "unlock"):
         command = commands.add_parser(action, help=f"Recursively {action} one or more directories")
@@ -722,12 +857,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "self-test":
             self_test(absolute(args.parent))
             return 0
+        if args.command == "roots":
+            rows = registered_roots()
+            if args.json:
+                print(json.dumps(rows, indent=2))
+            else:
+                for row in rows:
+                    print(f"{row['registration']:<8} {display(row['root'])}" + (" (default)" if row['default'] else ""))
+            return 0
+        if args.command == "activate-root":
+            activate_root(absolute(args.path))
+            return 0
         write = args.command in ("lock", "unlock") and not args.dry_run
         if write:
             require_admin(immutable=True)
-        scope = load_scope(args.root, write=write)
+        scope = load_scope(args.root, write=write, paths=getattr(args, "paths", None))
         if args.command == "doctor":
-            with open_path(scope.root, directory=True) as fd:
+            with open_node(scope.identity) as fd:
                 flags = Flags().read(fd)
             print(f"Scope: {display(scope.root)}")
             print(f"Installed configuration: {'yes' if CONFIG.exists() else 'no (preview only)'}")
@@ -750,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
             for root in roots:
                 print(f"  {display(root)}")
             return 0
-        with operation_journal() as journal:
+        with operation_journal(scope) as journal:
             if args.command == "unlock" and args.dry_run:
                 count = sum(any(inside(Path(path), root) for root in roots) for path in journal.records)
                 print(f"Would release {count} recorded locks. Pre-existing locks stay in place.")

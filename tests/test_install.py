@@ -78,6 +78,23 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
         self.assertEqual(list(self.bin.iterdir()), [])
 
+    def test_two_root_upgrade_dispatch_preserves_exact_arguments(self):
+        helper=self.source/'install_two_roots.py'
+        helper.write_text("import os,sys\nfrom pathlib import Path\nPath(os.environ['LOCKER_TEST_LOG']).write_text('\\n'.join(sys.argv[1:]))\n")
+        canonical=str(self.root/'future library');legacy=str(self.root/'legacy code')
+        result=subprocess.run(['/bin/sh',str(self.script),'--upgrade','--reserve-root',canonical,legacy],
+                              env=self.environment,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.log.read_text().splitlines(),['install','--canonical',canonical,'--legacy',legacy])
+        self.assertFalse(Path(canonical).exists())
+        self.assertFalse(self.installed.exists())
+
+    def test_reservation_requires_explicit_upgrade_mode(self):
+        result=subprocess.run(['/bin/sh',str(self.script),'--reserve-root',str(self.root/'new'),str(self.root/'old')],
+                              env=self.environment,text=True,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(self.log.exists());self.assertFalse(self.installed.exists())
+
     def test_symlink_destination_is_not_replaced(self):
         unrelated = self.root / "unrelated"
         unrelated.write_text("keep this\n")

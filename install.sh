@@ -10,6 +10,14 @@ if [ "${1-}" = '--upgrade' ]; then
     locker_upgrade=true
     shift
 fi
+if [ "${1-}" = '--reserve-root' ]; then
+    if [ "$locker_upgrade" != true ] || [ "$#" -ne 3 ]; then
+        echo 'Usage: sudo ./install.sh --upgrade --reserve-root /absolute/new-root /absolute/existing-root' >&2
+        exit 1
+    fi
+    locker_source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+    exec /usr/bin/python3 -IB "$locker_source_dir/install_two_roots.py" install --canonical "$2" --legacy "$3"
+fi
 if [ "$#" -ne 1 ]; then
     echo 'Usage: sudo ./install.sh [--upgrade] /absolute/workspace/path' >&2
     exit 1
@@ -52,11 +60,14 @@ import sys
 
 path = Path(sys.argv[1])
 info = path.lstat()
-expected = b'#!/usr/bin/python3 -I\n"""Folder Locker: explicit, recursive Linux immutable locks within one workspace."""\n'
+expected = (
+    b'#!/usr/bin/python3 -I\n"""Folder Locker: explicit, recursive Linux immutable locks within one workspace."""\n',
+    b'#!/usr/bin/python3 -I\n"""Folder Locker: explicit, recursive Linux immutable locks within registered roots."""\n',
+)
 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit('Refusing to upgrade an installation that is not a trusted root-owned regular file.')
 with path.open('rb') as stream:
-    if stream.read(len(expected)) != expected:
+    if stream.readline() + stream.readline() not in expected:
         raise SystemExit('Refusing to overwrite an unrelated /usr/local/bin/locker.')
 PY
 fi

@@ -21,9 +21,11 @@ class WorkspaceTests(unittest.TestCase):
         self.workspace.mkdir()
         (self.workspace / "notes.txt").write_text("notes\n")
         self.config = self.scratch / "config.json"
-        config_patch = patch.object(locker, "CONFIG", self.config)
-        config_patch.start()
-        self.addCleanup(config_patch.stop)
+        for name, value in (("CONFIG", self.config),
+                            ("SECONDARY_CONFIG", self.scratch / "additional-root.json")):
+            config_patch = patch.object(locker, name, value)
+            config_patch.start()
+            self.addCleanup(config_patch.stop)
 
     def install_config(self):
         scope = locker.Scope.create(self.workspace)

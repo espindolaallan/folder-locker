@@ -23,16 +23,22 @@ flags. Keep versioned backups for work performed while folders are editable.
 
 ## Selection boundaries
 
-One installation records one physical workspace and its device/inode identity.
-Commands can select its root, a nested folder, or several disjoint folders.
+The original workspace keeps its configuration and device/inode identity. An
+explicit [two-root upgrade](two-root-upgrade.md) can reserve exactly one additional,
+disjoint root, with its own identity and journal. Neither registration authorizes
+access to their common parent. Commands can select one registered root, a nested
+folder, or several disjoint folders within that same root.
 Overlapping selections collapse into their common selected ancestor. Paths
 outside the configured workspace are refused.
 
 The selected path and its ancestors must not be symlinks. The scanner refuses
 special files and nested mounts, including bind mounts on the same device.
 Use a narrower selection or a workspace on the intended filesystem. There is
-currently no command for switching scopes or managing several independent
-workspaces. Unlock and uninstall before configuring a different workspace.
+no command for silently replacing a root or adding a third one. An additional
+root remains PENDING until the owner provisions it and explicitly activates its
+identity. Missing/replaced roots, changed parent identity and mounted aliases are
+refused. Problems with the additional root do not prevent commands on the original
+root; an active additional root can also operate independently of the original tree.
 
 The running tool, its configuration and its journal cannot be inside a selection
 being changed. Use `/usr/local/bin/locker` when managing a folder that contains
@@ -70,7 +76,10 @@ shared files separately.
 
 Recovery records are root-owned and stored under `/var/lib/folder-locker`.
 They are saved before applying flags. Concurrent locker mutations are serialized
-with a process lock. Files are checked by identity before changing their flags.
+with the same process lock, including administrative upgrade/activation. The
+additional root uses `additional/state.json`; its operations never rewrite the
+original `state.json`. Files are checked by identity before changing their flags.
+Hard-linked aliases spanning roots cannot be mutated through a one-root command.
 
 - A normal locking failure attempts to roll back newly acquired locks.
 - If rollback fails, or the process is killed, recovery records remain.
@@ -112,7 +121,13 @@ filesystem of interest. `/tmp` may be a different filesystem from the workspace.
 
 ## Uninstall
 
-First stop other locker operations and release the tool's locks across the
+For a two-root installation, do not follow the single-workspace removal commands
+below until both roots are separately recovered and their journals inspected. Never
+discard an active additional-root registration or journal to downgrade. The bounded
+upgrade rollback is only for the pre-provisioning/PENDING checkpoint; see
+[two-root upgrade](two-root-upgrade.md).
+
+For a single-workspace installation, first stop other locker operations and release the tool's locks across the
 **whole configured workspace**, including any previously selected subfolders.
 Set this variable to the scope shown by `locker doctor`:
 
